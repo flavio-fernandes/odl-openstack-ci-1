@@ -1,0 +1,1 @@
+wget https://raw.githubusercontent.com/opendaylight/releng-builder/master/jjb/ovsdb/include-raw-openstack-ci.sh

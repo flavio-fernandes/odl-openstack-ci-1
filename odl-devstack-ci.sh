@@ -2,7 +2,7 @@
 
 cd "$(dirname "$0")"
 
-STACK_AND_TEST="yes"
+STACK_AND_TEST="no"
 
 # Check for Fedora vs. Ubuntu
 if [ -f "/etc/debian_version" ]; then
