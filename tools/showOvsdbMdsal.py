@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+<<<<<<< HEAD
 import urllib2, base64, json, sys
 
 mdsalDict = {}
@@ -11,11 +12,30 @@ CONST_CONFIG = 'cfg'
 CONST_NET_TOPOLOGY = 'network-topology'
 CONST_TOPOLOGY = 'topology'
 
+=======
+import urllib2, base64, json, sys, optparse
+
+# globals
+mdsalDict = {}
+CONST_DEFAULT_DEBUG=0
+options = None
+state = None
+jsonTopologiesDict = {}
+
+CONST_OPERATIONAL = 'operational'
+CONST_CONFIG = 'config'
+CONST_NET_TOPOLOGY = 'network-topology'
+CONST_TOPOLOGY = 'topology'
+CONST_TP_OF_INTERNAL = 65534
+>>>>>>> showOvsdbMdsal
 CONST_ALIASES = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india', 'juliet',
                  'kilo', 'lima', 'mike', 'november', 'oscar', 'papa', 'quebec', 'romeo', 'sierra', 'tango',
                  'uniform', 'victor', 'whiskey', 'xray', 'yankee', 'zulu']
 
+<<<<<<< HEAD
 CONST_TP_OF_INTERNAL = 65534
+=======
+>>>>>>> showOvsdbMdsal
 
 class State:
     def __init__(self):
@@ -133,6 +153,7 @@ class OvsNode:
             'otherLocalIp', self.otherLocalIp,
             'ovsVersion', self.ovsVersion)
 
+<<<<<<< HEAD
 # --
 
 
@@ -143,6 +164,8 @@ state = State()
 mdsalTreeTypeDict = {CONST_OPERATIONAL:'operational', CONST_CONFIG:'config'}
 jsonTopologiesDict = {}
 
+=======
+>>>>>>> showOvsdbMdsal
 # ======================================================================
 
 def printError(msg):
@@ -155,15 +178,30 @@ def prt(msg, logLevel=0):
 def prtLn(msg, logLevel=0):
     prtCommon('{}\n'.format(msg), logLevel)
 def prtCommon(msg, logLevel):
+<<<<<<< HEAD
     if debug >= logLevel:
+=======
+    if options.debug >= logLevel:
+>>>>>>> showOvsdbMdsal
         sys.stdout.write(msg)
 
 # ======================================================================
 
+<<<<<<< HEAD
+=======
+def getMdsalTreeType():
+    if options.useConfigTree:
+        return CONST_CONFIG
+    return CONST_OPERATIONAL
+
+# --
+
+>>>>>>> showOvsdbMdsal
 def grabJson(mdsalTreeType):
     global jsonTopologiesDict
     global mdsalDict
 
+<<<<<<< HEAD
     # odlip = '192.168.50.21'
     odlip = 'localhost'
     odlport = '8080'
@@ -176,6 +214,14 @@ def grabJson(mdsalTreeType):
         # You need the replace to handle encodestring adding a trailing newline 
         # (https://docs.python.org/2/library/base64.html#base64.encodestring)
         base64string = base64.encodestring('{}:{}'.format(username, password)).replace('\n', '')
+=======
+    try:
+        request = urllib2.Request('http://{}:{}/restconf/{}/network-topology:network-topology/'.format(
+                options.odlIp, options.odlPort, mdsalTreeType))
+        # You need the replace to handle encodestring adding a trailing newline 
+        # (https://docs.python.org/2/library/base64.html#base64.encodestring)
+        base64string = base64.encodestring('{}:{}'.format(options.odlUsername, options.odlPassword)).replace('\n', '')
+>>>>>>> showOvsdbMdsal
         request.add_header('Authorization', 'Basic {}'.format(base64string))   
         result = urllib2.urlopen(request)
     except urllib2.URLError, e:
@@ -267,14 +313,23 @@ def parseJsonNodeOvsdb(indent, mdsalTreeType, topologyId, nodeIndex, node):
 
 def parseJsonNodeBridge(indent, mdsalTreeType, topologyId, nodeIndex, node):
 
+<<<<<<< HEAD
     controllerTarget = ''
     controllerConnected = False
+=======
+    controllerTarget = None
+    controllerConnected = None
+>>>>>>> showOvsdbMdsal
     controllerEntries = node.get('ovsdb:controller-entry')
     if type(controllerEntries) is list:
         for currControllerEntry in controllerEntries:
             if type(currControllerEntry) is dict:
                 controllerTarget = currControllerEntry.get('target')
+<<<<<<< HEAD
                 controllerConnected = currControllerEntry.get('is-connected', False)
+=======
+                controllerConnected = currControllerEntry.get('is-connected')
+>>>>>>> showOvsdbMdsal
                 break
     bridgeNode = BridgeNode(node.get('node-id'), node.get('ovsdb:datapath-id'), node.get('ovsdb:bridge-name'), controllerTarget, controllerConnected)
 
@@ -355,7 +410,11 @@ def parseJsonFlowLink(link):
 
 def showPrettyNamesMap():
     spc = ' ' * 2
+<<<<<<< HEAD
     if not useAlias or len(state.bridgeNodes) == 0:
+=======
+    if not options.useAlias or len(state.bridgeNodes) == 0:
+>>>>>>> showOvsdbMdsal
         return
 
     prtLn('aliasMap:', 0)
@@ -413,10 +472,19 @@ def showPrettyBridgeNodes(indent, bridgeNodeIds, ovsNode = None):
         prt('{}{}:{}'.format(indent, showPrettyName(nodeId), bridgeNode.name), 0)
 
         if ovsNode is None or \
+<<<<<<< HEAD
                 bridgeNode.controllerTarget == '' or \
                 ovsNode.inetMgr.split(':')[0] != bridgeNode.controllerTarget.split(':')[-2] or \
                 bridgeNode.controllerConnected != True:
             prt(' controller:{} connected:{}'.format(bridgeNode.controllerTarget, bridgeNode.controllerConnected), 0)
+=======
+                bridgeNode.controllerTarget is None or \
+                bridgeNode.controllerTarget == '' or \
+                ovsNode.inetMgr.split(':')[0] != bridgeNode.controllerTarget.split(':')[-2] or \
+                bridgeNode.controllerConnected != True:
+            prt(' controller:{}'.format(bridgeNode.controllerTarget), 0)
+            prt(' connected:{}'.format(bridgeNode.controllerConnected), 0)
+>>>>>>> showOvsdbMdsal
         prtLn('', 0)
         showPrettyTerminationPoints(indent + '  ', bridgeNode.tps)
 
@@ -477,7 +545,11 @@ def showPrettyTerminationPoints(indent, tps):
 # --
 
 def showPrettyName(name):
+<<<<<<< HEAD
     if not useAlias:
+=======
+    if not options.useAlias:
+>>>>>>> showOvsdbMdsal
         return name
 
     # handle both openflow:138604958315853:2 and openflow:138604958315853 (aka dpid)
@@ -522,17 +594,59 @@ def showOfLinks():
 
 # --
 
+<<<<<<< HEAD
 if __name__ == '__main__':
     grabJson(CONST_OPERATIONAL)
     parseJson(CONST_OPERATIONAL)
     # grabJson(CONST_CONFIG)
     # parseJson(CONST_CONFIG)
     # print state
+=======
+def parseArgv():
+    global options
+
+    parser = optparse.OptionParser(version="0.1")
+    parser.add_option("-d", "--debug", action="count", dest="debug", default=CONST_DEFAULT_DEBUG, 
+                      help="Verbosity. Can be provided multiple times for more debug.")
+    parser.add_option("-n", "--noalias", action="store_false", dest="useAlias", default=True,
+                      help="Do not map nodeId of bridges to an alias")
+    parser.add_option("-i", "--ip", action="store", type="string", dest="odlIp", default="localhost",
+                      help="opendaylights ip address")
+    parser.add_option("-t", "--port", action="store", type="string", dest="odlPort", default="8080",
+                      help="opendaylights listening tcp port on restconf northbound")
+    parser.add_option("-u", "--user", action="store", type="string", dest="odlUsername", default="admin",
+                      help="opendaylight restconf username")
+    parser.add_option("-p", "--password", action="store", type="string", dest="odlPassword", default="admin",
+                      help="opendaylight restconf password")
+    parser.add_option("-c", "--config", action="store_true", dest="useConfigTree", default=False,
+                      help="parse mdsal restconf config tree instead of operational tree")
+
+    (options, args) = parser.parse_args(sys.argv)
+    prtLn('argv options:{} args:{}'.format(options, args), 2)
+
+# --
+
+def doMain():
+    global state
+
+    state = State()
+    parseArgv()
+    grabJson(getMdsalTreeType())
+    parseJson(getMdsalTreeType())
+>>>>>>> showOvsdbMdsal
     showPrettyNamesMap()
     showNodesPretty()
     showOfLinks()
 
+<<<<<<< HEAD
 
     sys.exit(0)
 
 ##
+=======
+# --
+
+if __name__ == "__main__":
+    doMain()
+    sys.exit(0)
+>>>>>>> showOvsdbMdsal
