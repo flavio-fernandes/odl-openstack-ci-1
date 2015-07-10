@@ -3,11 +3,13 @@
 import urllib2, base64, json, sys, optparse
 
 # globals
-mdsalDict = {}
 CONST_DEFAULT_DEBUG=0
 options = None
 state = None
-jsonTopologiesDict = {}
+jsonTopologyNodes = []
+jsonInventoryNodes = []
+flowInfoNodes = {}
+nodeIdToDpidCache = {}
 
 CONST_OPERATIONAL = 'operational'
 CONST_CONFIG = 'config'
@@ -95,7 +97,7 @@ class BridgeNode:
     def getOpenflowName(self):
         if self.dpId is None:
             return self.nodeId
-        return 'openflow:' + str( int('0x' + self.dpId.replace(':',''), 16) )
+        return dataPathIdToOfFormat(self.dpId)
 
     def addTerminationPoint(self, terminationPoint):
         self.tps.append(terminationPoint)
@@ -159,13 +161,10 @@ def getMdsalTreeType():
 
 # --
 
-def grabJson(mdsalTreeType):
-    global jsonTopologiesDict
-    global mdsalDict
+def grabJson(url):
 
     try:
-        request = urllib2.Request('http://{}:{}/restconf/{}/network-topology:network-topology/'.format(
-                options.odlIp, options.odlPort, mdsalTreeType))
+        request = urllib2.Request(url)
         # You need the replace to handle encodestring adding a trailing newline 
         # (https://docs.python.org/2/library/base64.html#base64.encodestring)
         base64string = base64.encodestring('{}:{}'.format(options.odlUsername, options.odlPassword)).replace('\n', '')
@@ -181,7 +180,92 @@ def grabJson(mdsalTreeType):
 
     data = json.load(result)
     prtLn(data, 4)
+    return data
 
+# --
+
+def grabInventoryJson(mdsalTreeType):
+    global jsonInventoryNodes
+
+    url = 'http://{}:{}/restconf/{}/opendaylight-inventory:nodes/'.format(options.odlIp, options.odlPort, mdsalTreeType)
+    data = grabJson(url)
+    
+    if not 'nodes' in data:
+        printError( '{}\n\nError: did not find nodes in {}'.format(data, url) )
+        sys.exit(1)
+
+    data2 = data['nodes']
+    if not 'node' in data2:
+        printError( '{}\n\nError: did not find node in {}'.format(data2, url) )
+        sys.exit(1)
+
+    jsonInventoryNodes = data2['node']
+
+# --
+
+def parseInventoryJson(mdsalTreeType):
+    global jsonInventoryNodes
+    global flowInfoNodes
+
+    for nodeDict in jsonInventoryNodes:
+        if not 'id' in nodeDict:
+            continue
+
+        bridgeOfId = nodeDict.get('id')
+        prtLn('inventory node {} has keys {}'.format(bridgeOfId, nodeDict.keys()), 3)
+
+        # locate bridge Node
+        bridgeNodeId = None
+        bridgeNode = None
+        for currNodeId in state.bridgeNodes.keys():
+            if state.bridgeNodes[currNodeId].getOpenflowName() == bridgeOfId:
+                bridgeNodeId = currNodeId
+                bridgeNode = state.bridgeNodes[currNodeId]
+                break
+
+        if bridgeNodeId is None:
+            prtLn('inventory node {}'.format(bridgeOfId), 1)
+        else:
+            prtLn('inventory node {}, aka {}, aka {}'.format(bridgeOfId, bridgeNodeId, showPrettyName(bridgeNodeId)), 1)
+
+        flowInfoNode = {}
+
+        indent = ' ' * 2
+        prtLn('{}features: {}'.format(indent, nodeDict.get('flow-node-inventory:switch-features', {})), 2)
+        prt('{}sw: {}'.format(indent, nodeDict.get('flow-node-inventory:software')), 2)
+        prt('{}hw: {}'.format(indent, nodeDict.get('flow-node-inventory:hardware')), 2)
+        prt('{}manuf: {}'.format(indent, nodeDict.get('flow-node-inventory:manufacturer')), 2)
+        prtLn('{}ip: {}'.format(indent, nodeDict.get('flow-node-inventory:ip-address')), 2)
+
+
+        for inventoryEntry in nodeDict.get('flow-node-inventory:table', []):
+            if 'id' in inventoryEntry:
+                currTableId = inventoryEntry.get('id')
+                for currFlow in inventoryEntry.get('flow', []):
+                    prtLn('{}table {}: {}'.format(indent, currTableId, currFlow.get('id')), 1)
+                    prtLn('{}{}'.format(indent * 2, currFlow), 2)
+
+                    if currTableId in flowInfoNode:
+                        flowInfoNode[ currTableId ].append( currFlow.get('id') )
+                    else:
+                        flowInfoNode[ currTableId ] = [ currFlow.get('id') ]
+
+        prtLn('', 1)
+
+        for currTableId in flowInfoNode.keys():
+            flowInfoNode[currTableId].sort()
+
+        # store info collected in flowInfoNodes
+        flowInfoNodes[bridgeOfId] = flowInfoNode
+
+# --
+
+def grabTopologyJson(mdsalTreeType):
+    global jsonTopologyNodes
+
+    url = 'http://{}:{}/restconf/{}/network-topology:network-topology/'.format(options.odlIp, options.odlPort, mdsalTreeType)
+    data = grabJson(url)
+    
     if not CONST_NET_TOPOLOGY in data:
         printError( '{}\n\nError: did not find {} in data'.format(data, CONST_NET_TOPOLOGY) )
         sys.exit(1)
@@ -191,48 +275,68 @@ def grabJson(mdsalTreeType):
         printError( '{}\n\nError: did not find {} in data2'.format(data2, CONST_TOPOLOGY) )
         sys.exit(1)
 
-    jsonTopologiesDict[mdsalTreeType] = data2[CONST_TOPOLOGY]
+    jsonTopologyNodes = data2[CONST_TOPOLOGY]
 
 # --
 
-def parseJson(mdsalTreeType):
-    if mdsalTreeType not in jsonTopologiesDict:
+def buildDpidCache():
+    global jsonTopologyNodes
+    global nodeIdToDpidCache
+
+    # only needed if not parsing operational tree
+    if getMdsalTreeType() == CONST_OPERATIONAL:
         return
 
-    for nodeDict in jsonTopologiesDict[mdsalTreeType]:
+    jsonTopologyNodesSave = jsonTopologyNodes
+    grabTopologyJson(CONST_OPERATIONAL)
+    jsonTopologyNodesLocal = jsonTopologyNodes
+    jsonTopologyNodes = jsonTopologyNodesSave
+
+    for nodeDict in jsonTopologyNodesLocal:
+        if nodeDict.get('topology-id') != 'ovsdb:1':
+            continue
+        for node in nodeDict.get('node', []):
+            if node.get('node-id') is None or node.get('ovsdb:datapath-id') is None:
+                continue
+            nodeIdToDpidCache[ node.get('node-id') ] = node.get('ovsdb:datapath-id')
+
+# --
+
+def parseTopologyJson(mdsalTreeType):
+    for nodeDict in jsonTopologyNodes:
         if not 'topology-id' in nodeDict:
             continue
         prtLn('{} {} keys are: {}'.format(mdsalTreeType, nodeDict['topology-id'], nodeDict.keys()), 3)
         if 'node' in nodeDict:
             nodeIndex = 0
             for currNode in nodeDict['node']:
-                parseJsonNode('', mdsalTreeType, nodeDict['topology-id'], nodeIndex, currNode)
+                parseTopologyJsonNode('', mdsalTreeType, nodeDict['topology-id'], nodeIndex, currNode)
                 nodeIndex += 1
             prtLn('', 2)
         if (mdsalTreeType == CONST_OPERATIONAL) and (nodeDict['topology-id'] == 'flow:1') and ('link' in nodeDict):
-            parseJsonFlowLink(nodeDict['link'])
+            parseTopologyJsonFlowLink(nodeDict['link'])
 
     prtLn('', 1)
 
 # --
 
-def parseJsonNode(indent, mdsalTreeType, topologyId, nodeIndex, node):
+def parseTopologyJsonNode(indent, mdsalTreeType, topologyId, nodeIndex, node):
     if node.get('node-id') is None:
         printError( 'Warning: unexpected node: {}\n'.format(node) )
         return
     prt('{} {} node[{}] {} '.format(indent + mdsalTreeType, topologyId, nodeIndex, node.get('node-id')), 2)
     if 'ovsdb:bridge-name' in node:
         prtLn('', 2)
-        parseJsonNodeBridge(indent + '  ', mdsalTreeType, topologyId, nodeIndex, node)
+        parseTopologyJsonNodeBridge(indent + '  ', mdsalTreeType, topologyId, nodeIndex, node)
     elif 'ovsdb:connection-info' in node:
         prtLn('', 2)
-        parseJsonNodeOvsdb(indent + '  ', mdsalTreeType, topologyId, nodeIndex, node)
+        parseTopologyJsonNodeOvsdb(indent + '  ', mdsalTreeType, topologyId, nodeIndex, node)
     else:
         prtLn('keys: {}'.format(node.keys()), 2)
 
 # --
 
-def parseJsonNodeOvsdb(indent, mdsalTreeType, topologyId, nodeIndex, node):
+def parseTopologyJsonNodeOvsdb(indent, mdsalTreeType, topologyId, nodeIndex, node):
     keys = node.keys()
     keys.sort()
     for k in keys:
@@ -258,7 +362,7 @@ def parseJsonNodeOvsdb(indent, mdsalTreeType, topologyId, nodeIndex, node):
 
 # --
 
-def parseJsonNodeBridge(indent, mdsalTreeType, topologyId, nodeIndex, node):
+def parseTopologyJsonNodeBridge(indent, mdsalTreeType, topologyId, nodeIndex, node):
 
     controllerTarget = None
     controllerConnected = None
@@ -269,7 +373,10 @@ def parseJsonNodeBridge(indent, mdsalTreeType, topologyId, nodeIndex, node):
                 controllerTarget = currControllerEntry.get('target')
                 controllerConnected = currControllerEntry.get('is-connected')
                 break
-    bridgeNode = BridgeNode(node.get('node-id'), node.get('ovsdb:datapath-id'), node.get('ovsdb:bridge-name'), controllerTarget, controllerConnected)
+
+    nodeId = node.get('node-id')
+    dpId = node.get('ovsdb:datapath-id', nodeIdToDpidCache.get(nodeId))
+    bridgeNode = BridgeNode(nodeId, dpId, node.get('ovsdb:bridge-name'), controllerTarget, controllerConnected)
 
     keys = node.keys()
     keys.sort()
@@ -277,7 +384,7 @@ def parseJsonNodeBridge(indent, mdsalTreeType, topologyId, nodeIndex, node):
         if k == 'termination-point' and len(node[k]) > 0:
             tpIndex = 0
             for tp in node[k]:
-                terminationPoint = parseJsonNodeBridgeTerminationPoint('%stermination-point[%d] :' % (indent, tpIndex), mdsalTreeType, topologyId, nodeIndex, node, tp)
+                terminationPoint = parseTopologyJsonNodeBridgeTerminationPoint('%stermination-point[%d] :' % (indent, tpIndex), mdsalTreeType, topologyId, nodeIndex, node, tp)
 
                 # skip boring tps
                 if terminationPoint.ofPort == CONST_TP_OF_INTERNAL and \
@@ -296,7 +403,7 @@ def parseJsonNodeBridge(indent, mdsalTreeType, topologyId, nodeIndex, node):
 
 # --
 
-def parseJsonNodeBridgeTerminationPoint(indent, mdsalTreeType, topologyId, nodeIndex, node, tp):
+def parseTopologyJsonNodeBridgeTerminationPoint(indent, mdsalTreeType, topologyId, nodeIndex, node, tp):
     attachedMac = ''
     ifaceId = ''
 
@@ -323,7 +430,7 @@ def parseJsonNodeBridgeTerminationPoint(indent, mdsalTreeType, topologyId, nodeI
 
 # --
 
-def parseJsonFlowLink(link):
+def parseTopologyJsonFlowLink(link):
     linkCount = 0
     spc = ' ' * 2
     for currLinkDict in link:
@@ -382,6 +489,49 @@ def showNodesPretty():
         prtLn('', 0)
         showPrettyBridgeNodes('  ', getNodeBridgeIds(ovsNode.nodeId), ovsNode)
     showBridgeOnlyNodes(True)
+    prtLn('', 0)
+
+# --
+
+def showFlowInfoPretty():
+    global flowInfoNodes
+    spc = ' ' * 2
+
+    if not options.showFlows:
+        return
+
+    if len(flowInfoNodes) == 0:
+        prtLn('no flowInfo found\n', 0)
+        return
+
+    # translate flowKeys (openflow:123124) into their alias format
+    # then sort it and translate back, so we list them in the order
+    flowInfoNodeKeysDict = {}
+    for flowInfoNodeKey in flowInfoNodes.keys():
+        flowInfoNodeKeysDict[ showPrettyName(flowInfoNodeKey) ] = flowInfoNodeKey
+    flowInfoNodeKeysKeys = flowInfoNodeKeysDict.keys()
+    flowInfoNodeKeysKeys.sort()
+
+    flowInfoNodesKeys = [ flowInfoNodeKeysDict[ x ] for x in flowInfoNodeKeysKeys ]
+
+    nodeIdToDpidCacheReverse = {dataPathIdToOfFormat(v): k for k, v in nodeIdToDpidCache.items()}
+    nodesVisited = 0
+    for flowInfoNodeKey in flowInfoNodesKeys:
+        if nodesVisited > 0: prtLn('', 0)
+
+        nodeName = showPrettyName(flowInfoNodeKey)
+        if nodeName == flowInfoNodeKey:
+            nodeName += '  ( {} )'.format( nodeIdToDpidCacheReverse.get(flowInfoNodeKey, 'node_not_in_topology') )
+
+        prtLn('{} tree flows at {}'.format(getMdsalTreeType(), nodeName), 0)
+        flowInfoNode = flowInfoNodes[flowInfoNodeKey]
+        flowInfoTables = flowInfoNode.keys()
+        flowInfoTables.sort()
+        for flowInfoTable in flowInfoTables:
+            for rule in flowInfoNode[flowInfoTable]:
+                prtLn('{}table {}: {}'.format(spc, flowInfoTable, rule), 0)
+        nodesVisited += 1
+
     prtLn('', 0)
 
 # --
@@ -471,6 +621,11 @@ def showPrettyTerminationPoints(indent, tps):
 
 # --
 
+def dataPathIdToOfFormat(dpId):
+    return 'openflow:' + str( int('0x' + dpId.replace(':',''), 16) )
+
+# --
+
 def showPrettyName(name):
     if not options.useAlias:
         return name
@@ -535,6 +690,8 @@ def parseArgv():
                       help="opendaylight restconf password")
     parser.add_option("-c", "--config", action="store_true", dest="useConfigTree", default=False,
                       help="parse mdsal restconf config tree instead of operational tree")
+    parser.add_option("-f", "--hide-flows", action="store_false", dest="showFlows", default=True,
+                      help="hide flows")
 
     (options, args) = parser.parse_args(sys.argv)
     prtLn('argv options:{} args:{}'.format(options, args), 2)
@@ -546,10 +703,14 @@ def doMain():
 
     state = State()
     parseArgv()
-    grabJson(getMdsalTreeType())
-    parseJson(getMdsalTreeType())
+    buildDpidCache()
+    grabTopologyJson(getMdsalTreeType())
+    grabInventoryJson(getMdsalTreeType())
+    parseTopologyJson(getMdsalTreeType())
+    parseInventoryJson(getMdsalTreeType())
     showPrettyNamesMap()
     showNodesPretty()
+    showFlowInfoPretty()    
     showOfLinks()
 
 # --
