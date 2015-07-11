@@ -28,7 +28,7 @@ class State:
         self.nodeIdToAlias = {}
 
         self.bridgeNodes = {}
-        self.ovsNodes = {}
+        self.ovsdbNodes = {}
         self.ofLinks = {}
 
     def __repr__(self):
@@ -36,14 +36,14 @@ class State:
             'nextAliasIndex', self.nextAliasIndex,
             'nextAliasWrap', self.nextAliasWrap,
             'bridgeNodes_ids', self.bridgeNodes.keys(),
-            'ovsNodes_ids', self.ovsNodes.keys(),
+            'ovsdbNodes_ids', self.ovsdbNodes.keys(),
             'nodeIdToAlias', self.nodeIdToAlias)
 
     def registerBridgeNode(self, bridgeNode):
         self.bridgeNodes[bridgeNode.nodeId] = bridgeNode
 
-    def registerOvsNode(self, ovsNode):
-        self.ovsNodes[ovsNode.nodeId] = ovsNode
+    def registerOvsdbNode(self, ovsdbNode):
+        self.ovsdbNodes[ovsdbNode.nodeId] = ovsdbNode
 
     def getNextAlias(self, nodeId):
         result = CONST_ALIASES[ self.nextAliasIndex ]
@@ -115,7 +115,7 @@ class BridgeNode:
 
 # --
 
-class OvsNode:
+class OvsdbNode:
     def __init__(self, nodeId, inetMgr, inetNode, otherLocalIp, ovsVersion):
         global state
         if inetNode != '':
@@ -129,7 +129,7 @@ class OvsNode:
         self.ovsVersion = ovsVersion
 
     def __repr__(self):
-        return 'OvsNode {}:{} {}:{} {}:{} {}:{} {}:{} {}:{}'.format(
+        return 'OvsdbNode {}:{} {}:{} {}:{} {}:{} {}:{} {}:{}'.format(
             'alias', self.alias,
             'nodeId', self.nodeId,
             'inetMgr', self.inetMgr,
@@ -165,10 +165,10 @@ def grabJson(url):
 
     try:
         request = urllib2.Request(url)
-        # You need the replace to handle encodestring adding a trailing newline 
+        # You need the replace to handle encodestring adding a trailing newline
         # (https://docs.python.org/2/library/base64.html#base64.encodestring)
         base64string = base64.encodestring('{}:{}'.format(options.odlUsername, options.odlPassword)).replace('\n', '')
-        request.add_header('Authorization', 'Basic {}'.format(base64string))   
+        request.add_header('Authorization', 'Basic {}'.format(base64string))
         result = urllib2.urlopen(request)
     except urllib2.URLError, e:
         printError('Unable to send request: {}\n'.format(e))
@@ -189,7 +189,7 @@ def grabInventoryJson(mdsalTreeType):
 
     url = 'http://{}:{}/restconf/{}/opendaylight-inventory:nodes/'.format(options.odlIp, options.odlPort, mdsalTreeType)
     data = grabJson(url)
-    
+
     if not 'nodes' in data:
         printError( '{}\n\nError: did not find nodes in {}'.format(data, url) )
         sys.exit(1)
@@ -265,7 +265,7 @@ def grabTopologyJson(mdsalTreeType):
 
     url = 'http://{}:{}/restconf/{}/network-topology:network-topology/'.format(options.odlIp, options.odlPort, mdsalTreeType)
     data = grabJson(url)
-    
+
     if not CONST_NET_TOPOLOGY in data:
         printError( '{}\n\nError: did not find {} in data'.format(data, CONST_NET_TOPOLOGY) )
         sys.exit(1)
@@ -356,8 +356,8 @@ def parseTopologyJsonNodeOvsdb(indent, mdsalTreeType, topologyId, nodeIndex, nod
                 otherLocalIp = currOtherConfig.get('other-config-value')
                 break
 
-    ovsdbNode = OvsNode(node.get('node-id'), connectionInfo.get('inetMgr'), connectionInfo.get('inetNode'), otherLocalIp, node.get('ovsdb:ovs-version'))
-    state.registerOvsNode(ovsdbNode)
+    ovsdbNode = OvsdbNode(node.get('node-id'), connectionInfo.get('inetMgr'), connectionInfo.get('inetNode'), otherLocalIp, node.get('ovsdb:ovs-version'))
+    state.registerOvsdbNode(ovsdbNode)
     prtLn('Added {}'.format(ovsdbNode), 1)
 
 # --
@@ -423,9 +423,9 @@ def parseTopologyJsonNodeBridgeTerminationPoint(indent, mdsalTreeType, topologyI
         else:
             prtLn('{} {} : {}'.format(indent, k, tp[k]), 2)
 
-    return TerminationPoint(tp.get('ovsdb:name'), 
-                            tp.get('ovsdb:ofport'), 
-                            tp.get('ovsdb:interface-type', '').split('-')[-1], 
+    return TerminationPoint(tp.get('ovsdb:name'),
+                            tp.get('ovsdb:ofport'),
+                            tp.get('ovsdb:interface-type', '').split('-')[-1],
                             attachedMac, ifaceId)
 
 # --
@@ -449,8 +449,6 @@ def parseTopologyJsonFlowLink(link):
         else:
             state.ofLinks[linkSrc] = linkDest
 
-    # showOfLinks()
-        
 # --
 
 def showPrettyNamesMap():
@@ -465,7 +463,7 @@ def showPrettyNamesMap():
 
     resultMapKeys = resultMap.keys()
     resultMapKeys.sort()
-    
+
     for resultMapKey in resultMapKeys:
         prtLn('{0}{1: <10} -> {2}'.format(spc, resultMapKey, resultMap[resultMapKey]), 0)
     prtLn('', 0)
@@ -473,21 +471,21 @@ def showPrettyNamesMap():
 # --
 
 def showNodesPretty():
-    if len(state.ovsNodes) == 0:
+    if len(state.ovsdbNodes) == 0:
         showBridgeOnlyNodes()
         return
 
-    aliasDict = { state.ovsNodes[nodeId].alias : nodeId for nodeId in state.ovsNodes.keys() }
+    aliasDict = { state.ovsdbNodes[nodeId].alias : nodeId for nodeId in state.ovsdbNodes.keys() }
     aliasDictKeys = aliasDict.keys()
     aliasDictKeys.sort()
     for ovsAlias in aliasDictKeys:
-        ovsNode = state.ovsNodes[ aliasDict[ovsAlias] ]
+        ovsdbNode = state.ovsdbNodes[ aliasDict[ovsAlias] ]
 
-        prt('ovsNode:{} mgr:{} version:{}'.format(ovsAlias, ovsNode.inetMgr, ovsNode.ovsVersion), 0)
-        if ovsNode.inetNode.split(':')[0] != ovsNode.otherLocalIp:
-            prt(' **localIp:{}'.format(ovsNode.otherLocalIp), 0)
+        prt('ovsdbNode:{} mgr:{} version:{}'.format(ovsAlias, ovsdbNode.inetMgr, ovsdbNode.ovsVersion), 0)
+        if ovsdbNode.inetNode.split(':')[0] != ovsdbNode.otherLocalIp:
+            prt(' **localIp:{}'.format(ovsdbNode.otherLocalIp), 0)
         prtLn('', 0)
-        showPrettyBridgeNodes('  ', getNodeBridgeIds(ovsNode.nodeId), ovsNode)
+        showPrettyBridgeNodes('  ', getNodeBridgeIds(ovsdbNode.nodeId), ovsdbNode)
     showBridgeOnlyNodes(True)
     prtLn('', 0)
 
@@ -547,7 +545,7 @@ def getNodeBridgeIds(nodeIdFilter = None):
 
 # --
 
-def showPrettyBridgeNodes(indent, bridgeNodeIds, ovsNode = None):
+def showPrettyBridgeNodes(indent, bridgeNodeIds, ovsdbNode = None):
     if bridgeNodeIds is None:
         return
 
@@ -555,10 +553,10 @@ def showPrettyBridgeNodes(indent, bridgeNodeIds, ovsNode = None):
         bridgeNode = state.bridgeNodes[nodeId]
         prt('{}{}:{}'.format(indent, showPrettyName(nodeId), bridgeNode.name), 0)
 
-        if ovsNode is None or \
+        if ovsdbNode is None or \
                 bridgeNode.controllerTarget is None or \
                 bridgeNode.controllerTarget == '' or \
-                ovsNode.inetMgr.split(':')[0] != bridgeNode.controllerTarget.split(':')[-2] or \
+                ovsdbNode.inetMgr.split(':')[0] != bridgeNode.controllerTarget.split(':')[-2] or \
                 bridgeNode.controllerConnected != True:
             prt(' controller:{}'.format(bridgeNode.controllerTarget), 0)
             prt(' connected:{}'.format(bridgeNode.controllerConnected), 0)
@@ -576,7 +574,7 @@ def showBridgeOnlyNodes(showOrphansOnly = False):
     for bridge in state.bridgeNodes.values():
         nodePrefix = bridge.nodeId.split('/bridge/')[0]
 
-        if showOrphansOnly and nodePrefix in state.ovsNodes:
+        if showOrphansOnly and nodePrefix in state.ovsdbNodes:
             continue
 
         if nodePrefix in resultMap:
@@ -676,7 +674,7 @@ def parseArgv():
     global options
 
     parser = optparse.OptionParser(version="0.1")
-    parser.add_option("-d", "--debug", action="count", dest="debug", default=CONST_DEFAULT_DEBUG, 
+    parser.add_option("-d", "--debug", action="count", dest="debug", default=CONST_DEFAULT_DEBUG,
                       help="Verbosity. Can be provided multiple times for more debug.")
     parser.add_option("-n", "--noalias", action="store_false", dest="useAlias", default=True,
                       help="Do not map nodeId of bridges to an alias")
@@ -710,7 +708,7 @@ def doMain():
     parseInventoryJson(getMdsalTreeType())
     showPrettyNamesMap()
     showNodesPretty()
-    showFlowInfoPretty()    
+    showFlowInfoPretty()
     showOfLinks()
 
 # --
